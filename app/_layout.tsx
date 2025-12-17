@@ -1,24 +1,20 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import 'react-native-reanimated';
+// app/(tabs)/_layout.tsx
+import React from "react";
+import { Stack } from "expo-router";
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
-
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
-
-export default function RootLayout() {
-  const colorScheme = useColorScheme();
-
+export default function TabsLayout() {
+  // ✅ Tabs(하단 Home/Explore) 제거하고 Stack으로만 구성
+  // => 하단 탭바가 완전히 사라짐
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-      </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        animation: "fade",
+      }}
+    >
+      <Stack.Screen name="index" />
+      {/* explore 라우트가 남아있어도 화면에 탭은 안 뜸 */}
+      <Stack.Screen name="explore" />
+    </Stack>
   );
 }
