@@ -9,6 +9,11 @@
 // ✅ 생성모달: 도시 시트/다중지역 시트가 입력창과 겹치던 문제 완화(키보드 자동 닫기 + 루트 오버레이)
 // ✅ Expo Snack OK / RN Web OK (외부 라이브러리 없음)
 
+// ✅ v1.5.2 핫픽스(마케터 피드백 반영)
+// ✅ duration 필터: slot.totalMins <= dur (이하만 노출)
+// ✅ 지역 선택: 체크=포함(기존 유지) + 0개 선택 시 검색 금지(메시지)
+// ✅ 체크인 UX: 확인 팝업 + 카드 버튼이 체크인↔취소로 바뀜
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   SafeAreaView,
@@ -48,7 +53,7 @@ const T = {
   noSlotsS: "지역/시간/필터를 조정해봐.",
   details: "자세히",
   checkin: "체크인",
-  leave: "나가기",
+  leave: "취소", // ✅ 버튼 라벨을 '취소'로 명확히
   share: "공유",
   back: "← 뒤로",
   safetyNote: "밝은 공공장소에서 만나고, DM 금지. 10분 내 결정.",
@@ -349,7 +354,13 @@ function Root() {
   const toggleCity = (code: string) => {
     setSelectedCities((prev) => {
       const has = prev.includes(code);
-      return has ? prev.filter((x) => x !== code) : [...prev, code];
+      const next = has ? prev.filter((x) => x !== code) : [...prev, code];
+
+      // ✅ 0개 선택되면 메시지(검색은 useMemo에서 막힘)
+      if (next.length === 0) {
+        Alert.alert("지역 선택", "최소 1개 지역 이상 선택해줘.");
+      }
+      return next;
     });
   };
 
@@ -382,15 +393,18 @@ function Root() {
   };
 
   const list = useMemo(() => {
+    // ✅ 지역 0개 선택 시 검색 금지(마케터 피드백)
+    if (selectedCities.length === 0) return [];
+
     let arr = slots.slice();
 
     if (activeCat) arr = arr.filter((s) => s.type === activeCat);
 
-    const cities = selectedCities.length ? selectedCities : HOT5;
-    arr = arr.filter((s) => includes(cities, s.city));
+    // ✅ 지역 포함 필터 (fallback 제거)
+    arr = arr.filter((s) => selectedCities.includes(s.city));
 
-    // ✅ 진행시간 필터
-    arr = arr.filter((s) => (s.totalMins || 10) >= dur);
+    // ✅ 진행시간 필터 (이하로 수정)
+    arr = arr.filter((s) => (s.totalMins || 10) <= dur);
 
     // ✅ 거리 필터(실제 동작)
     arr = arr.filter((s) => (s.distKm || 999) <= radius);
@@ -422,7 +436,7 @@ function Root() {
   const [screen, setScreen] = useState<"home" | "detail">("home");
   const [selId, setSelId] = useState<number | null>(null);
 
-  // ✅ 체크인: 언제든 반응 / 제한 없음
+  // ✅ 체크인: 확인 팝업 + 상태에 따른 안내 (마케터 피드백)
   const join = (slot?: Slot) => {
     if (!slot) return;
 
@@ -431,20 +445,33 @@ function Root() {
       Alert.alert("종료됨", "이미 종료된 모임이야.");
       return;
     }
-    if (gs.state === "live") {
-      Alert.alert("진행중", "이미 시작된 모임이야. 그래도 합류는 가능해(테스트용).");
-    }
 
-    setSlots((prev) =>
-      prev.map((s) => {
-        if (s.id !== slot.id) return s;
-        const already = includes(s.attendees, ME);
-        const nextAtt = already ? s.attendees : [...(s.attendees || []), ME];
-        return { ...s, attendees: nextAtt };
-      })
+    const extra =
+      gs.state === "live"
+        ? "\n\n이미 시작된 모임이야. 그래도 합류는 가능해(테스트용)."
+        : "";
+
+    Alert.alert(
+      "체크인",
+      "공공장소에서 만나고\n시간을 꼭 지켜줘.\nDM 금지, 예의 필수." + extra,
+      [
+        { text: "취소", style: "cancel" },
+        {
+          text: "확인",
+          onPress: () => {
+            setSlots((prev) =>
+              prev.map((s) => {
+                if (s.id !== slot.id) return s;
+                const already = includes(s.attendees, ME);
+                const nextAtt = already ? s.attendees : [...(s.attendees || []), ME];
+                return { ...s, attendees: nextAtt };
+              })
+            );
+            Alert.alert("체크인", "완료");
+          },
+        },
+      ]
     );
-
-    Alert.alert("체크인", "완료");
   };
 
   const leave = (slot?: Slot) => {
@@ -455,7 +482,7 @@ function Root() {
         return { ...s, attendees: (s.attendees || []).filter((x) => x !== ME) };
       })
     );
-    Alert.alert("나가기", "완료");
+    Alert.alert("취소", "완료");
   };
 
   const shareSlot = async (slot?: Slot) => {
@@ -584,7 +611,13 @@ function Root() {
         <View style={styles.row3}>
           <Stepper label={t.distance} value={radius} onMinus={() => setRadius(clamp(radius - KM_STEP, 1, 50))} onPlus={() => setRadius(clamp(radius + KM_STEP, 1, 50))} />
           <Stepper label={t.duration} value={dur} step={10} onMinus={() => setDur(clamp(dur - 10, 10, 100))} onPlus={() => setDur(clamp(dur + 10, 10, 100))} />
-          <TouchableOpacity style={styles.sortBtn} onPress={() => { Keyboard.dismiss(); setShowSortSheet(true); }}>
+          <TouchableOpacity
+            style={styles.sortBtn}
+            onPress={() => {
+              Keyboard.dismiss();
+              setShowSortSheet(true);
+            }}
+          >
             <Text style={styles.sortBtnT} numberOfLines={1}>
               {t.sort}
             </Text>
@@ -614,7 +647,13 @@ function Root() {
               </TouchableOpacity>
             );
           })}
-          <TouchableOpacity style={styles.moreChip} onPress={() => { Keyboard.dismiss(); setShowCitySheet(true); }}>
+          <TouchableOpacity
+            style={styles.moreChip}
+            onPress={() => {
+              Keyboard.dismiss();
+              setShowCitySheet(true);
+            }}
+          >
             <Text style={styles.moreChipT} numberOfLines={1}>
               {T.regionMore}
             </Text>
@@ -628,13 +667,28 @@ function Root() {
         {list.length === 0 && (
           <View style={styles.empty}>
             <Text style={styles.emptyT}>{t.noSlotsT}</Text>
-            <Text style={styles.emptyS}>{t.noSlotsS}</Text>
+            <Text style={styles.emptyS}>
+              {selectedCities.length === 0 ? "최소 1개 지역 이상 선택해줘." : t.noSlotsS}
+            </Text>
           </View>
         )}
 
-        {list.map((s) => (
-          <Card key={s.id} slot={s} nowMs={nowMs} onDetails={() => { setSelId(s.id); setScreen("detail"); }} onPrimary={() => join(s)} />
-        ))}
+        {list.map((s) => {
+          const joined = includes(s.attendees, ME);
+          return (
+            <Card
+              key={s.id}
+              slot={s}
+              joined={joined}
+              nowMs={nowMs}
+              onDetails={() => {
+                setSelId(s.id);
+                setScreen("detail");
+              }}
+              onPrimary={() => (joined ? leave(s) : join(s))}
+            />
+          );
+        })}
 
         <View style={styles.noteBox}>
           <Text style={styles.note}>{t.safetyNote}</Text>
@@ -662,6 +716,7 @@ function Root() {
           onApply={(codes) => {
             setSelectedCities(codes);
             setShowCitySheet(false);
+            if (codes.length === 0) Alert.alert("지역 선택", "최소 1개 지역 이상 선택해줘.");
           }}
           onClose={() => setShowCitySheet(false)}
         />
@@ -674,7 +729,10 @@ function Root() {
           setForm={setForm}
           onClose={() => setCreateOpen(false)}
           onCreate={createSlot}
-          onOpenCity={() => { Keyboard.dismiss(); setShowCitySingle(true); }}
+          onOpenCity={() => {
+            Keyboard.dismiss();
+            setShowCitySingle(true);
+          }}
         />
       )}
 
@@ -692,7 +750,14 @@ function Root() {
 
       {/* DETAILS */}
       {screen === "detail" && selId && (
-        <Details slot={selectedSlot} nowMs={nowMs} onBack={() => setScreen("home")} onShare={() => shareSlot(selectedSlot)} onJoin={() => join(selectedSlot)} onLeave={() => leave(selectedSlot)} />
+        <Details
+          slot={selectedSlot}
+          nowMs={nowMs}
+          onBack={() => setScreen("home")}
+          onShare={() => shareSlot(selectedSlot)}
+          onJoin={() => join(selectedSlot)}
+          onLeave={() => leave(selectedSlot)}
+        />
       )}
     </SafeAreaView>
   );
@@ -730,7 +795,19 @@ function getUrgencyMins(nowMs: number, slot: Slot) {
   return 999999;
 }
 
-function Card({ slot, onDetails, onPrimary, nowMs }: { slot: Slot; onDetails: () => void; onPrimary: () => void; nowMs: number }) {
+function Card({
+  slot,
+  onDetails,
+  onPrimary,
+  nowMs,
+  joined,
+}: {
+  slot: Slot;
+  onDetails: () => void;
+  onPrimary: () => void;
+  nowMs: number;
+  joined: boolean;
+}) {
   const gs = getState(nowMs, slot.start, slot.totalMins || 10);
   const urgencyMins = getUrgencyMins(nowMs, slot);
   const tint = tintByMins(urgencyMins);
@@ -778,9 +855,9 @@ function Card({ slot, onDetails, onPrimary, nowMs }: { slot: Slot; onDetails: ()
           <Text style={styles.outBtnT}>{T.details}</Text>
         </TouchableOpacity>
 
-        {/* ✅ 항상 눌림 */}
-        <TouchableOpacity style={styles.inBtn} onPress={onPrimary}>
-          <Text style={styles.inBtnT}>{T.checkin}</Text>
+        {/* ✅ 체크인 상태에 따라 라벨/톤 변경 */}
+        <TouchableOpacity style={[styles.inBtn, joined && { backgroundColor: "#3A3F4A" }]} onPress={onPrimary}>
+          <Text style={[styles.inBtnT, joined && { color: "#fff" }]}>{joined ? T.leave : T.checkin}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -933,7 +1010,17 @@ function MultiCitySheet({ currentList, onApply, onClose }: { currentList: string
       const has = prev.includes(code);
       return has ? prev.filter((x) => x !== code) : [...prev, code];
     });
-  const apply = () => onApply(uniq(local));
+
+  // ✅ 0개면 적용 막고 메시지
+  const apply = () => {
+    const next = uniq(local);
+    if (next.length === 0) {
+      Alert.alert("지역 선택", "최소 1개 지역 이상 선택해줘.");
+      return;
+    }
+    onApply(next);
+  };
+
   const reset = () => setLocal([]);
 
   // 그룹
