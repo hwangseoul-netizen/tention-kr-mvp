@@ -1,18 +1,10 @@
-// app/(tabs)/index.tsx — TENtion KR v1.5.1 (Web/Mobile MVP 안정판)
-// ✅ 1:1 완전 제거
-// ✅ 인원 제한(max/isFull/Full/disabled) 완전 제거
-// ✅ 지역선택 Set 사용 제거 → 배열로 변경(반응성/버그 해결)
-// ✅ 거리(radius) 실제 필터 동작(슬롯에 distKm 부여)
-// ✅ 정렬(가까운순) 실제 동작(distKm)
-// ✅ 체크인 버튼 “항상 반응” (ended/live/upcoming 모두 Alert 처리)
-// ✅ 생성 후 “무조건 보이게” (카테고리/지역/스크롤 자동 세팅)
-// ✅ 생성모달: 도시 시트/다중지역 시트가 입력창과 겹치던 문제 완화(키보드 자동 닫기 + 루트 오버레이)
-// ✅ Expo Snack OK / RN Web OK (외부 라이브러리 없음)
-
-// ✅ v1.5.2 핫픽스(마케터 피드백 반영)
-// ✅ duration 필터: slot.totalMins <= dur (이하만 노출)
-// ✅ 지역 선택: 체크=포함(기존 유지) + 0개 선택 시 검색 금지(메시지)
-// ✅ 체크인 UX: 확인 팝업 + 카드 버튼이 체크인↔취소로 바뀜
+// app/(tabs)/index.tsx — TENtion KR v1.5.2 (Web/Mobile MVP 안정판)
+// ✅ duration 필터: slot.totalMins <= selectedDuration (이하만 노출)
+// ✅ 지역 선택: 체크=포함, 0개 선택 방지(최소 1개 강제)
+// ✅ 체크인 UX: 확인 팝업 + 카드 버튼 체크인↔취소 토글
+// ✅ 시간대 제한 제거: 홈은 시간대 필터/재생성으로 제한하지 않음(다양한 시간대 슬롯 자동 생성)
+// ✅ 생성 슬롯 유지: 자동생성이 setSlots로 덮어써서 "내가 만든 슬롯"이 사라지던 문제 해결
+// ✅ 생성 UX: 시작시간 입력 + 10~100분 탭하면 종료시간 자동 기입(수동 수정도 가능)
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -48,12 +40,12 @@ const T = {
   time: "시간대",
   timeBands: ["이른 아침", "오전", "점심", "오후", "저녁"],
   distance: "km",
-  duration: "분",
+  duration: "최대(분)",
   noSlotsT: "표시할 슬롯이 없어요",
-  noSlotsS: "지역/시간/필터를 조정해봐.",
+  noSlotsS: "지역/필터를 조정해봐.",
   details: "자세히",
   checkin: "체크인",
-  leave: "취소", // ✅ 버튼 라벨을 '취소'로 명확히
+  leave: "취소",
   share: "공유",
   back: "← 뒤로",
   safetyNote: "밝은 공공장소에서 만나고, DM 금지. 10분 내 결정.",
@@ -160,6 +152,13 @@ const colorFor = (type: string) =>
   type === "Dating" ? "#FF5CAB" : type === "Friends" ? "#2EE778" : type === "Workout" ? "#FFA23B" : "#6AAEFF";
 const iconFor = (type: string) => (type === "Dating" ? "💞" : type === "Friends" ? "🤝" : type === "Workout" ? "💪" : "💬");
 
+function computeEndHM(startHM: string, mins: number) {
+  const st = parseHM(startHM);
+  const base = st == null ? 18 * 60 : st;
+  const en = (base + mins) % 1440;
+  return `${pad2(Math.floor(en / 60))}:${pad2(en % 60)}`;
+}
+
 /* ===== Details helpers ===== */
 const WEEK_KR = ["일", "월", "화", "수", "목", "금", "토"];
 function formatKRDate(d = new Date()) {
@@ -229,6 +228,7 @@ type Slot = {
   vibe?: string;
   attendees: string[]; // ✅ 제한 없음
   distKm: number; // ✅ 거리 필터용
+  origin?: "gen" | "user"; // ✅ 자동생성/유저생성 구분
 };
 
 /* =========================
@@ -297,7 +297,11 @@ function generateKRSlots({ cityCode = "GN", band = "저녁", count = 20 }: { cit
   for (let i = 0; i < count; i++) {
     const type = weightedPick(cats, wts);
     const place = places[Math.floor(Math.random() * places.length)];
-    const d = DUR_OPTS[Math.floor(Math.random() * DUR_OPTS.length)];
+
+    // ✅ 10/20이 더 자주 나오게 (dur=10에서도 슬롯이 아예 0이 되는 걸 방지)
+    const durWts = [6, 5, 4, 3, 2, 2, 1, 1, 1, 1]; // 10~100
+    const d = weightedPick(DUR_OPTS, durWts);
+
     const start = addMin(anchor, 10 * Math.floor(Math.random() * 18)); // 3시간 범위
     const end = addMin(start, d);
     const tb = guessBandFromStart(start);
@@ -306,6 +310,7 @@ function generateKRSlots({ cityCode = "GN", band = "저녁", count = 20 }: { cit
     const distKm = Math.max(1, Math.round(Math.random() * 35)); // ✅ 1~35km 랜덤(필터/정렬 데모)
 
     list.push({
+      origin: "gen",
       id: Date.now() + Math.floor(Math.random() * 1e6),
       type,
       city: cityCode,
@@ -342,11 +347,8 @@ function Root() {
   // filters
   const [activeCat, setActiveCat] = useState<Slot["type"] | "">(""); // "" = ALL
   const [radius, setRadius] = useState(5); // ✅ 거리 필터 작동
-  const [dur, setDur] = useState(10);
+  const [dur, setDur] = useState(100); // ✅ 기본은 전체 노출(최대 100분)
   const [sortBy, setSortBy] = useState(t.sortOpt[0]);
-
-  // 시간대
-  const [band, setBand] = useState(t.timeBands[4]); // 저녁
 
   // ✅ 지역 선택: Array
   const [selectedCities, setSelectedCities] = useState<string[]>(HOT5);
@@ -354,13 +356,11 @@ function Root() {
   const toggleCity = (code: string) => {
     setSelectedCities((prev) => {
       const has = prev.includes(code);
-      const next = has ? prev.filter((x) => x !== code) : [...prev, code];
-
-      // ✅ 0개 선택되면 메시지(검색은 useMemo에서 막힘)
-      if (next.length === 0) {
+      if (has && prev.length === 1) {
         Alert.alert("지역 선택", "최소 1개 지역 이상 선택해줘.");
+        return prev;
       }
-      return next;
+      return has ? prev.filter((x) => x !== code) : [...prev, code];
     });
   };
 
@@ -373,18 +373,30 @@ function Root() {
   // slots
   const [slots, setSlots] = useState<Slot[]>([]);
 
-  // 초기/필터 기반 생성
+  // ✅ 자동 슬롯 생성: 시간대 제한 없이(모든 timeBands 섞어 생성)
+  // ✅ 핵심: 내가 만든 슬롯(origin:'user')은 절대 날리지 않고 유지
   useEffect(() => {
     const base = selectedCities.length ? selectedCities : HOT5;
-    const per = Math.max(10, Math.floor(48 / base.length));
-    const packs = base.flatMap((code) => generateKRSlots({ cityCode: code, band, count: per }));
-    setSlots(packs.slice(0, 72));
-  }, [band, selectedCities]);
+
+    const CAP = 72;
+    const perCity = Math.max(10, Math.floor(60 / base.length));
+    const perBand = Math.max(2, Math.floor(perCity / T.timeBands.length));
+
+    const packs = base.flatMap((code) =>
+      T.timeBands.flatMap((b) => generateKRSlots({ cityCode: code, band: b, count: perBand }))
+    );
+
+    setSlots((prev) => {
+      const user = prev.filter((s) => s.origin === "user");
+      const remain = Math.max(0, CAP - user.length);
+      return [...user, ...packs.slice(0, remain)];
+    });
+  }, [selectedCities]);
 
   const resetHome = () => {
     setActiveCat("");
     setRadius(5);
-    setDur(10);
+    setDur(100);
     setSortBy(t.sortOpt[0]);
     setSearch("");
     setMyOnly(false);
@@ -393,20 +405,19 @@ function Root() {
   };
 
   const list = useMemo(() => {
-    // ✅ 지역 0개 선택 시 검색 금지(마케터 피드백)
     if (selectedCities.length === 0) return [];
 
     let arr = slots.slice();
 
     if (activeCat) arr = arr.filter((s) => s.type === activeCat);
 
-    // ✅ 지역 포함 필터 (fallback 제거)
+    // ✅ 지역 포함
     arr = arr.filter((s) => selectedCities.includes(s.city));
 
-    // ✅ 진행시간 필터 (이하로 수정)
+    // ✅ 진행시간 필터(이하)
     arr = arr.filter((s) => (s.totalMins || 10) <= dur);
 
-    // ✅ 거리 필터(실제 동작)
+    // ✅ 거리 필터
     arr = arr.filter((s) => (s.distKm || 999) <= radius);
 
     // ✅ 내 모임: 내가 체크인했거나, 내가 만든 모임(hostType === "me")
@@ -423,7 +434,6 @@ function Root() {
 
     // ✅ 정렬
     if (sortBy === t.sortOpt[0]) {
-      // 마감 임박: (upcoming이면 시작까지 남은 분, live면 종료까지 남은 분)
       arr.sort((a, b) => getUrgencyMins(nowMs, a) - getUrgencyMins(nowMs, b));
     }
     if (sortBy === t.sortOpt[1]) arr.sort((a, b) => b.id - a.id);
@@ -436,7 +446,7 @@ function Root() {
   const [screen, setScreen] = useState<"home" | "detail">("home");
   const [selId, setSelId] = useState<number | null>(null);
 
-  // ✅ 체크인: 확인 팝업 + 상태에 따른 안내 (마케터 피드백)
+  // ✅ 체크인: 확인 팝업 + 상태 안내
   const join = (slot?: Slot) => {
     if (!slot) return;
 
@@ -503,6 +513,7 @@ function Root() {
     start: "18:00",
     end: "18:10",
     dur: 10,
+    autoEnd: true, // ✅ duration 탭/자동계산 여부
     title: "",
     desc: "",
   });
@@ -515,6 +526,7 @@ function Root() {
       cat: activeCat || "",
       city: firstSel,
       dur: 10,
+      autoEnd: true,
       start: "18:00",
       end: "18:10",
       title: "",
@@ -523,20 +535,19 @@ function Root() {
     setCreateOpen(true);
   };
 
-  // ✅ 생성 후 "무조건 보이게" (지역/카테고리/스크롤)
+  // ✅ 생성 후 "무조건 보이게" + 생성 슬롯 유지(origin:user)
   const createSlot = () => {
     Keyboard.dismiss();
 
     const mins = clamp(form.dur, 10, 100);
-    const st = parseHM(form.start) ?? 18 * 60;
-    const enHM = (st + mins) % 1440;
-    const end = `${pad2(Math.floor(enHM / 60))}:${pad2(enHM % 60)}`;
+    const end = computeEndHM(form.start, mins);
     const mappedHost = form.host === T.host.plat ? "platform" : "me";
 
     const cat = (form.cat || "Talk") as Slot["type"];
     const city = form.city || "GN";
 
     const s: Slot = {
+      origin: "user",
       id: Date.now() + Math.floor(Math.random() * 1e6),
       type: cat,
       hostType: mappedHost,
@@ -550,18 +561,19 @@ function Root() {
       proofScore: 0,
       vibe: DEFAULT_VIBES[Math.floor(Math.random() * DEFAULT_VIBES.length)],
       attendees: [],
-      distKm: Math.max(1, Math.round(Math.random() * 10)), // 만든 건 가까운 걸로 보이게
+      distKm: Math.max(1, Math.round(Math.random() * 10)),
     };
 
     setSlots((prev) => [s, ...prev]);
     setCreateOpen(false);
 
-    // ✅ 생성 즉시 화면에 보이도록 필터 강제
+    // ✅ 생성 즉시 화면에 보이도록 필터 강제(지역/카테고리/최대시간)
     setActiveCat(cat);
     setSelectedCities((prev) => uniq(prev.includes(city) ? prev : [...prev, city]));
+    setDur(100);
 
     setTimeout(() => scrollRef.current?.scrollTo({ y: 0, animated: true }), 50);
-    Alert.alert("생성 완료", "피드 최상단에 추가됨");
+    Alert.alert("생성 완료", "피드 최상단에 업로드됨");
   };
 
   const selectedSlot = selId ? slots.find((s) => s.id === selId) : undefined;
@@ -624,17 +636,6 @@ function Root() {
           </TouchableOpacity>
         </View>
 
-        {/* 시간대 */}
-        <View style={styles.bandRow}>
-          {T.timeBands.map((b) => (
-            <TouchableOpacity key={b} onPress={() => setBand(b)} style={[styles.bandChip, band === b && styles.bandChipOn]}>
-              <Text style={[styles.bandChipT, band === b && styles.bandChipTOn]} numberOfLines={1}>
-                {b}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
         {/* 핫 지역 5 + 지역선택 */}
         <View style={styles.hotRow}>
           {HOT5.map((code) => {
@@ -667,9 +668,7 @@ function Root() {
         {list.length === 0 && (
           <View style={styles.empty}>
             <Text style={styles.emptyT}>{t.noSlotsT}</Text>
-            <Text style={styles.emptyS}>
-              {selectedCities.length === 0 ? "최소 1개 지역 이상 선택해줘." : t.noSlotsS}
-            </Text>
+            <Text style={styles.emptyS}>{t.noSlotsS}</Text>
           </View>
         )}
 
@@ -709,14 +708,13 @@ function Root() {
         />
       )}
 
-      {/* MULTI CITY SHEET (루트 오버레이) */}
+      {/* MULTI CITY SHEET */}
       {showCitySheet && (
         <MultiCitySheet
           currentList={selectedCities}
           onApply={(codes) => {
             setSelectedCities(codes);
             setShowCitySheet(false);
-            if (codes.length === 0) Alert.alert("지역 선택", "최소 1개 지역 이상 선택해줘.");
           }}
           onClose={() => setShowCitySheet(false)}
         />
@@ -736,12 +734,12 @@ function Root() {
         />
       )}
 
-      {/* CREATE CITY SINGLE SHEET (루트 오버레이로 분리 → 겹침 완화) */}
+      {/* CREATE CITY SINGLE SHEET */}
       {showCitySingle && (
         <CitySheetSingle
           current={form.city}
           onPick={(v) => {
-            setForm((f) => ({ ...f, city: v }));
+            setForm((f: any) => ({ ...f, city: v }));
             setShowCitySingle(false);
           }}
           onClose={() => setShowCitySingle(false)}
@@ -835,7 +833,7 @@ function Card({
       </Text>
 
       <Text style={styles.cardLine}>
-        🕒 {fmt24(slot.start)} ~ {fmt24(slot.end)} • {Math.max(10, slot.totalMins || 10)}분 • <Text style={tint}>{toTimeString(urgencyMins)}</Text>
+        🕒 {fmt24(slot.start)} ~ {fmt24(slot.end)} • {Math.max(10, slot.totalMins || 10)}분 • <Text style={tint as any}>{toTimeString(urgencyMins)}</Text>
       </Text>
 
       <Text style={styles.cardLine}>
@@ -855,7 +853,6 @@ function Card({
           <Text style={styles.outBtnT}>{T.details}</Text>
         </TouchableOpacity>
 
-        {/* ✅ 체크인 상태에 따라 라벨/톤 변경 */}
         <TouchableOpacity style={[styles.inBtn, joined && { backgroundColor: "#3A3F4A" }]} onPress={onPrimary}>
           <Text style={[styles.inBtnT, joined && { color: "#fff" }]}>{joined ? T.leave : T.checkin}</Text>
         </TouchableOpacity>
@@ -874,7 +871,7 @@ function Details({ slot, onBack, onShare, onJoin, onLeave, nowMs }: { slot?: Slo
 
   const urgencyMins = getUrgencyMins(nowMs, slot);
   const tint = tintByMins(urgencyMins);
-  const ratio = gs.state === "live" ? clamp((gs.end - nowMs) / ((slot.totalMins || 10) * 60 * 1000), 0, 1) : gs.state === "upcoming" ? 0 : 0;
+  const ratio = gs.state === "live" ? clamp((gs.end - nowMs) / ((slot.totalMins || 10) * 60 * 1000), 0, 1) : 0;
 
   const vibe = slot.vibe || DEFAULT_VIBES[Math.floor(Math.random() * DEFAULT_VIBES.length)];
   const hostLabel = slot.hostType === "platform" ? "TENtion Korea" : "User Host";
@@ -991,7 +988,10 @@ function ActionSheet({ title, value, options, onPick, onCancel }: { title: strin
         <Text style={styles.sheetTitle}>{title}</Text>
         {options.map((opt) => (
           <TouchableOpacity key={opt} style={styles.sheetItem} onPress={() => onPick(opt)}>
-            <Text style={[styles.sheetItemT, value === opt && { color: "#3EC6FF" }]}>{opt}{value === opt ? " •" : ""}</Text>
+            <Text style={[styles.sheetItemT, value === opt && { color: "#3EC6FF" }]}>
+              {opt}
+              {value === opt ? " •" : ""}
+            </Text>
           </TouchableOpacity>
         ))}
         <TouchableOpacity style={[styles.primaryBtn, { marginTop: 6 }]} onPress={onCancel}>
@@ -1008,10 +1008,14 @@ function MultiCitySheet({ currentList, onApply, onClose }: { currentList: string
   const toggle = (code: string) =>
     setLocal((prev) => {
       const has = prev.includes(code);
+      // ✅ 최소 1개 강제
+      if (has && prev.length === 1) {
+        Alert.alert("지역 선택", "최소 1개 지역 이상 선택해줘.");
+        return prev;
+      }
       return has ? prev.filter((x) => x !== code) : [...prev, code];
     });
 
-  // ✅ 0개면 적용 막고 메시지
   const apply = () => {
     const next = uniq(local);
     if (next.length === 0) {
@@ -1021,7 +1025,7 @@ function MultiCitySheet({ currentList, onApply, onClose }: { currentList: string
     onApply(next);
   };
 
-  const reset = () => setLocal([]);
+  const reset = () => setLocal(currentList?.length ? [currentList[0]] : ["GN"]);
 
   // 그룹
   const groups: Record<string, { code: string; name: string; region: string }[]> = {};
@@ -1086,7 +1090,12 @@ function CreateModal({
   onCreate: () => void;
   onOpenCity: () => void;
 }) {
-  const setDur = (v: number) => setForm((f: any) => ({ ...f, dur: clamp(v, 10, 100) }));
+  const setDur = (v: number) =>
+    setForm((f: any) => {
+      const mins = clamp(v, 10, 100);
+      const nextEnd = computeEndHM(f.start, mins);
+      return { ...f, dur: mins, autoEnd: true, end: nextEnd };
+    });
 
   return (
     <View style={styles.modalWrap}>
@@ -1137,12 +1146,33 @@ function CreateModal({
           {/* Start/End */}
           <Text style={styles.formLabel}>{T.startEnd}</Text>
           <View style={styles.dualRow}>
-            <TextInput style={[styles.input, styles.duo]} placeholder="HH:MM" placeholderTextColor="#738" value={form.start} onChangeText={(t) => setForm((f: any) => ({ ...f, start: t }))} />
-            <TextInput style={[styles.input, styles.duo]} placeholder="HH:MM" placeholderTextColor="#738" value={form.end} onChangeText={(t) => setForm((f: any) => ({ ...f, end: t }))} />
+            <TextInput
+              style={[styles.input, styles.duo]}
+              placeholder="HH:MM"
+              placeholderTextColor="#738"
+              value={form.start}
+              onChangeText={(t) =>
+                setForm((f: any) => {
+                  const next: any = { ...f, start: t };
+                  if (f.autoEnd) {
+                    const mins = clamp(f.dur, 10, 100);
+                    next.end = computeEndHM(t, mins);
+                  }
+                  return next;
+                })
+              }
+            />
+            <TextInput
+              style={[styles.input, styles.duo]}
+              placeholder="HH:MM"
+              placeholderTextColor="#738"
+              value={form.end}
+              onChangeText={(t) => setForm((f: any) => ({ ...f, end: t, autoEnd: false }))}
+            />
           </View>
 
           {/* Duration (2줄 5개씩) */}
-          <Text style={styles.formLabel}>진행시간</Text>
+          <Text style={styles.formLabel}>진행시간(탭하면 종료시간 자동)</Text>
           <View style={styles.durationGrid}>
             {DUR_OPTS.map((n) => (
               <TouchableOpacity key={n} style={[styles.timeChipGrid, form.dur === n && styles.timeChipGridOn]} onPress={() => setDur(n)}>
@@ -1260,13 +1290,6 @@ const styles = StyleSheet.create({
 
   sortBtn: { width: 110, height: CONTROL_H, borderRadius: 12, backgroundColor: "#161A22", borderWidth: 1, borderColor: "#2A2F38", alignItems: "center", justifyContent: "center" },
   sortBtnT: { color: "#fff", fontWeight: "900", fontSize: 13 },
-
-  // 시간대(1줄 5칩 균등)
-  bandRow: { flexDirection: "row", justifyContent: "space-between", gap: 6, marginBottom: 8, paddingHorizontal: 12 },
-  bandChip: { flexBasis: "19%", height: 36, borderRadius: 10, backgroundColor: "#151821", borderWidth: 1, borderColor: "#2A2F38", alignItems: "center", justifyContent: "center" },
-  bandChipOn: { backgroundColor: "#3A3F4A" },
-  bandChipT: { color: "#9aa", fontWeight: "800", fontSize: 12 },
-  bandChipTOn: { color: "#fff" },
 
   // 핫지역 5 + 지역선택
   hotRow: { flexDirection: "row", justifyContent: "space-between", gap: 6, marginBottom: 8, paddingHorizontal: 12 },
